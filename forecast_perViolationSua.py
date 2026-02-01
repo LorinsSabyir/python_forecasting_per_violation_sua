@@ -1,26 +1,35 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objects as go
+import numpy as np
+import matplotlib.pyplot as plt
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
-st.set_page_config(page_title="Violation Forecast", layout="wide")
+# --- Streamlit Page Configuration ---
+st.set_page_config(page_title="Panabo City Violation Forecast", layout="wide")
 
-# --- DATA LOADING ---
-@st.cache_data # This keeps the app fast
-def load_data():
+st.title("Traffic Violation Forecast")
+st.write("This dashboard shows the SARIMAX model predictions for the top 5 violations in Panabo City.")
+
+# --- Load Data ---
+try:
     df = pd.read_csv("totest.csv")
-    df['violator_address_municipal'] = df['violator_address_municipal'].astype(str).str.strip().str.lower()
-    df['appre_date'] = pd.to_datetime(df['appre_date'])
-    return df
+except FileNotFoundError:
+    st.error("Error: 'totest.csv' not found. Please ensure the file is in your GitHub repository.")
+    st.stop()
 
-df = load_data()
+# Clean municipal column
+df['violator_address_municipal'] = (
+    df['violator_address_municipal']
+    .astype(str)
+    .str.strip()
+    .str.lower()
+)
 
-# --- STREAMLIT UI ---
-st.title("📊 Panabo City Violation Forecast")
-st.write("SARIMAX Model: Actual counts vs. Next month prediction")
-
-# Filter for Panabo City
+# Filter Panabo City 
 df_panabo = df[df['violator_address_municipal'] == "panabo city"]
+
+# Convert date column
+df_panabo['appre_date'] = pd.to_datetime(df_panabo['appre_date'])
 
 monthly = (
     df_panabo
@@ -30,48 +39,73 @@ monthly = (
 )
 
 forecast_results = []
-violations = monthly['violation'].unique()
 
-for violation in violations:
+# --- SARIMAX Logic ---
+for violation in monthly['violation'].unique():
     data = monthly[monthly['violation'] == violation]
     ts = data.set_index('appre_date')['count']
-    
-    if len(ts) < 12: continue
 
-    model = SARIMAX(ts, order=(1,1,1), seasonal_order=(1,1,1,12),
-                    enforce_stationarity=False, enforce_invertibility=False)
+    # Skip if not enough data
+    if len(ts) < 12:
+        continue
+
+    model = SARIMAX(
+        ts,
+        order=(1,1,1),
+        seasonal_order=(1,1,1,12),
+        enforce_stationarity=False,
+        enforce_invertibility=False
+    )
+
     result = model.fit(disp=False)
     forecast = result.forecast(steps=1)
-    
+
     forecast_results.append({
         "Violation": violation,
-        "Forecast": int(round(forecast.iloc[0]))
+        "Forecast Next Month": int(round(forecast.iloc[0]))
     })
 
 forecast_df = pd.DataFrame(forecast_results)
-top5 = forecast_df.sort_values(by="Forecast", ascending=False).head(5)
-top5_violations = top5['Violation'].tolist()
 
-# --- PLOTLY CHART (Better for UI/UX) ---
-fig = go.Figure()
+top5 = forecast_df.sort_values(
+    by="Forecast Next Month",
+    ascending=False
+).head(5)
+
+# --- Visualization ---
+top5_violations = top5['Violation'].tolist()
+actual_top5 = monthly[monthly['violation'].isin(top5_violations)]
+
+plt.figure(figsize=(12, 6))
 
 for violation in top5_violations:
-    data = monthly[monthly['violation'] == violation]
-    
-    # Add Actual Line
-    fig.add_trace(go.Scatter(x=data['appre_date'], y=data['count'], name=f"{violation} (Actual)", mode='lines+markers'))
-    
-    # Add Forecast Point
-    forecast_val = top5[top5['Violation'] == violation]['Forecast'].iloc[0]
+    data = actual_top5[actual_top5['violation'] == violation]
+
+    # ACTUAL values
+    plt.plot(
+        data['appre_date'],
+        data['count'],
+        label=f"{violation} (Actual)"
+    )
+
+    # PREDICTED value (next month)
+    forecast_value = top5[top5['Violation'] == violation]['Forecast Next Month'].iloc[0]
     next_month = data['appre_date'].max() + pd.DateOffset(months=1)
-    
-    fig.add_trace(go.Scatter(x=[next_month], y=[forecast_val], 
-                             name=f"{violation} (Forecast)",
-                             marker=dict(size=12, symbol='star')))
 
-fig.update_layout(template="plotly_white", hovermode="x unified", height=500)
-st.plotly_chart(fig, use_container_width=True)
+    plt.scatter(
+        next_month,
+        forecast_value
+    )
 
-# Show Table
-st.subheader("Top 5 Forecasted Violations")
-st.table(top5)
+plt.title("Top 5 Violation Types: Actual vs Forecast (Panabo City)")
+plt.xlabel("Month")
+plt.ylabel("Violation Count")
+plt.legend()
+
+# Display the plot in the Streamlit App
+st.pyplot(plt.gcf())
+
+# Display the text results below the graph
+st.subheader("Top 5 Forecasted Violations for Next Month")
+for i, row in top5.iterrows():
+    st.write(f"- **{row['Violation']}**: {row['Forecast Next Month']} cases")
